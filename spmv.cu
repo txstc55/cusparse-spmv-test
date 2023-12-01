@@ -125,20 +125,48 @@ __global__ void setZero(double* y, int nRows){
 
 __global__ void blockSymmetricSpMVCOO(const double* diagonalBlockValues, const double* offDiagonalBlockValues, const int* blockOuterIndices, const int* blockInnerIndices, const double* x, double* y, double* yt, int nRows, int outerSize){
     int id = blockIdx.x * blockDim.x + threadIdx.x;
+    int tid = threadIdx.x;
+    __shared__ double allBlocks[BLOCKSIZE * BLOCKSIZE * 32];
+    __shared__ double allResults[BLOCKSIZE * 32];
+    __shared__ int rows[32];
+    __shared__ int cols[32];
     if (id < outerSize){
-        int row = blockOuterIndices[id];
-        int col = blockInnerIndices[id];
-        double rowResult[BLOCKSIZE] = {0.0, 0.0, 0.0};
-        const double block[9] = {*(offDiagonalBlockValues + id * BLOCKSIZE * BLOCKSIZE), *(offDiagonalBlockValues + id * BLOCKSIZE * BLOCKSIZE + 1), *(offDiagonalBlockValues + id * BLOCKSIZE * BLOCKSIZE + 2),
-            *(offDiagonalBlockValues + id * BLOCKSIZE * BLOCKSIZE + 3), *(offDiagonalBlockValues + id * BLOCKSIZE * BLOCKSIZE + 4), *(offDiagonalBlockValues + id * BLOCKSIZE * BLOCKSIZE + 5),
-            *(offDiagonalBlockValues + id * BLOCKSIZE * BLOCKSIZE + 6), *(offDiagonalBlockValues + id * BLOCKSIZE * BLOCKSIZE + 7), *(offDiagonalBlockValues + id * BLOCKSIZE * BLOCKSIZE + 8)};
-        blockMultiply(block, x + col * BLOCKSIZE, rowResult);
-        #pragma unroll
-        for (int i = 0; i < BLOCKSIZE; i++) {
-            atomicAdd(y + row * BLOCKSIZE + i, rowResult[i]);
+        for (int i = 0; i < BLOCKSIZE * BLOCKSIZE; i++){
+            allBlocks[tid * BLOCKSIZE * BLOCKSIZE + i] = *(offDiagonalBlockValues + id * BLOCKSIZE * BLOCKSIZE + i);
         }
+        for (int i = 0; i < BLOCKSIZE; i++){
+            allResults[tid * BLOCKSIZE + i] = 0.0;
+        }
+
+        rows[tid] = blockOuterIndices[id];
+        cols[tid] = blockInnerIndices[id];
+    }
+    __syncthreads();
+    if (id < outerSize){
+        int col =cols[tid];
+        blockMultiply(&allBlocks[tid * BLOCKSIZE * BLOCKSIZE], x + col * BLOCKSIZE, allResults + tid * BLOCKSIZE);
+    }
+    
+    // here we do a reduction
+    if (id < outerSize){
+        if (tid == 0 || rows[tid] != rows[tid - 1]){
+            double sum[3] = {allResults[tid * BLOCKSIZE], allResults[tid * BLOCKSIZE + 1], allResults[tid * BLOCKSIZE + 2]};
+            for (int i = tid + 1; i < 32 && rows[i] == rows[tid]; i++){
+                sum[0] += allResults[i * BLOCKSIZE];
+                sum[1] += allResults[i * BLOCKSIZE + 1];
+                sum[2] += allResults[i * BLOCKSIZE + 2];
+            }
+            for (int i = 0; i < BLOCKSIZE; i++){
+                atomicAdd(y + rows[tid] * BLOCKSIZE + i, sum[i]);
+            }
+        }
+    }
+
+    if (id < outerSize){
+        int row = rows[tid];
+        int col = cols[tid];
         const double x_slice[BLOCKSIZE] = {*(x + row * BLOCKSIZE), *(x + row * BLOCKSIZE + 1), *(x + row * BLOCKSIZE + 2)};
-        blockMultiplyTranspose(block, x_slice, y + col * BLOCKSIZE); 
+        blockMultiplyTranspose(&allBlocks[tid * BLOCKSIZE * BLOCKSIZE], x_slice, y + col * BLOCKSIZE); 
     }
 }
 
