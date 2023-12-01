@@ -26,6 +26,11 @@ def generateUpperTriangularCSR(n_rows, avg_elements_per_row):
     csr = coo.tocsr()
     return csr
 
+def save_array_int(array, filename):
+    np.savetxt(filename, array, fmt='%i')
+
+def save_array_float(array, filename):
+    np.savetxt(filename, array, fmt='%f')
 
 def expandCSR(csr, block_size, n_rows):
     outerIndices = csr.indptr
@@ -133,17 +138,40 @@ def main():
     #         result[col * block_size : (col + 1) * block_size] += blockVector
     #         count += 1
     # print("Norm of Difference: ", np.linalg.norm(expandedCSRVector - result))
+    import threading
+    arrays_to_save = [blockCSR.indices, blockCSR.indptr, expandedCSR.indices, expandedCSR.indptr]  # replace with your actual arrays
+    filenames = ['block_csr_inner.txt', 'block_csr_outer.txt', "expanded_csr_inner.txt", "expanded_csr_outer.txt"]  # replace with your actual filenames
+
+    arrays_to_save_float = [diagonalBlocks, offDiagonalBlocks, denseVector, expandedCSR.data, expandedCSRVector]
+    filenames_float = ["diagonal_blocks.txt", "off_diagonal_blocks.txt", "dense_vector.txt", "expanded_csr_values.txt", "result.txt"]
+
+    threads = []
+
+    # Creating and starting threads
+    for array, filename in zip(arrays_to_save, filenames):
+        thread = threading.Thread(target=save_array_int, args=(array, filename))
+        thread.start()
+        threads.append(thread)
     
-    np.savetxt('block_csr_inner.txt', blockCSR.indices, fmt='%i')
-    np.savetxt('block_csr_outer.txt', blockCSR.indptr, fmt='%i')
-    np.savetxt("diagonal_blocks.txt", diagonalBlocks, fmt='%f')
-    np.savetxt("off_diagonal_blocks.txt", offDiagonalBlocks, fmt='%f')
-    np.savetxt("dense_vector.txt", denseVector, fmt='%f')
-    np.savetxt("expanded_csr_inner.txt", expandedCSR.indices, fmt='%i')
-    np.savetxt("expanded_csr_outer.txt", expandedCSR.indptr, fmt='%i')
-    np.savetxt("expanded_csr_values.txt", expandedCSR.data, fmt='%f')
+    for array, filename in zip(arrays_to_save_float, filenames_float):
+        thread = threading.Thread(target=save_array_float, args=(array, filename))
+        thread.start()
+        threads.append(thread)
+
+    # Joining threads to wait for all of them to complete
+    for thread in threads:
+        thread.join()
+
+    # np.savetxt('block_csr_inner.txt', blockCSR.indices, fmt='%i')
+    # np.savetxt('block_csr_outer.txt', blockCSR.indptr, fmt='%i')
+    # np.savetxt("diagonal_blocks.txt", diagonalBlocks, fmt='%f')
+    # np.savetxt("off_diagonal_blocks.txt", offDiagonalBlocks, fmt='%f')
+    # np.savetxt("dense_vector.txt", denseVector, fmt='%f')
+    # np.savetxt("expanded_csr_inner.txt", expandedCSR.indices, fmt='%i')
+    # np.savetxt("expanded_csr_outer.txt", expandedCSR.indptr, fmt='%i')
+    # np.savetxt("expanded_csr_values.txt", expandedCSR.data, fmt='%f')
     np.savetxt("dimensions.txt", np.array([n_rows, block_size, len(blockCSR.indptr), len(blockCSR.indices), len(expandedCSR.indptr), len(expandedCSR.indices), len(diagonalBlocks), len(offDiagonalBlocks)]), fmt='%i')
-    np.savetxt("result.txt", expandedCSRVector, fmt='%f')
+    # np.savetxt("result.txt", expandedCSRVector, fmt='%f')
     
 
 
