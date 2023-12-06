@@ -11,3 +11,5 @@ do
     python generateSparseIndices.py $matSize 12 3
     ./run.sh >> performance.txt
 done
+
+python3 analyze.py
