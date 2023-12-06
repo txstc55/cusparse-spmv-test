@@ -3,7 +3,7 @@
 #include <iostream>
 #include <vector>
 #include <fstream>
-#define NUM_EXECUTION 1000
+#define NUM_EXECUTION 100
 #define BLOCKSIZE 3
 // Error checking macro for CUDA API calls
 #define CHECK_CUDA(call) \
@@ -163,6 +163,59 @@ __global__ void blockSymmetricSpMVCOO(const double* diagonalBlockValues, const d
     }
 
     if (id < outerSize){
+        int row = rows[tid];
+        int col = cols[tid];
+        const double x_slice[BLOCKSIZE] = {*(x + row * BLOCKSIZE), *(x + row * BLOCKSIZE + 1), *(x + row * BLOCKSIZE + 2)};
+        blockMultiplyTranspose(&allBlocks[tid * BLOCKSIZE * BLOCKSIZE], x_slice, y + col * BLOCKSIZE); 
+    }
+}
+
+__device__ int globalID = 0;
+__global__ void blockSymmetricSpMVCOOFCFS(const double* diagonalBlockValues, const double* offDiagonalBlockValues, const int* blockOuterIndices, const int* blockInnerIndices, const double* x, double* y, double* yt, int nRows, int outerSize){
+    int tid = threadIdx.x;
+    __shared__ double allBlocks[BLOCKSIZE * BLOCKSIZE * 32];
+    __shared__ double allResults[BLOCKSIZE * 32];
+    __shared__ int rows[32];
+    __shared__ int cols[32];
+    __shared__ int blockQueueID;
+    if (tid == 0){
+        blockQueueID = atomicAdd(&globalID, 32);
+    }
+    __syncthreads();
+    int queueID = blockQueueID + tid;
+    if (queueID < outerSize){
+        for (int i = 0; i < BLOCKSIZE * BLOCKSIZE; i++){
+            allBlocks[tid * BLOCKSIZE * BLOCKSIZE + i] = *(offDiagonalBlockValues + queueID * BLOCKSIZE * BLOCKSIZE + i);
+        }
+        for (int i = 0; i < BLOCKSIZE; i++){
+            allResults[tid * BLOCKSIZE + i] = 0.0;
+        }
+
+        rows[tid] = blockOuterIndices[queueID];
+        cols[tid] = blockInnerIndices[queueID];
+    }
+    __syncthreads();
+    if (queueID < outerSize){
+        int col =cols[tid];
+        blockMultiply(&allBlocks[tid * BLOCKSIZE * BLOCKSIZE], x + col * BLOCKSIZE, allResults + tid * BLOCKSIZE);
+    }
+    
+    // here we do a reduction
+    if (queueID < outerSize){
+        if (tid == 0 || rows[tid] != rows[tid - 1]){
+            double sum[3] = {allResults[tid * BLOCKSIZE], allResults[tid * BLOCKSIZE + 1], allResults[tid * BLOCKSIZE + 2]};
+            for (int i = tid + 1; i < 32 && rows[i] == rows[tid]; i++){
+                sum[0] += allResults[i * BLOCKSIZE];
+                sum[1] += allResults[i * BLOCKSIZE + 1];
+                sum[2] += allResults[i * BLOCKSIZE + 2];
+            }
+            for (int i = 0; i < BLOCKSIZE; i++){
+                atomicAdd(y + rows[tid] * BLOCKSIZE + i, sum[i]);
+            }
+        }
+    }
+
+    if (queueID < outerSize){
         int row = rows[tid];
         int col = cols[tid];
         const double x_slice[BLOCKSIZE] = {*(x + row * BLOCKSIZE), *(x + row * BLOCKSIZE + 1), *(x + row * BLOCKSIZE + 2)};
@@ -435,6 +488,45 @@ int main() {
     }
     cudaEventElapsedTime(&milliseconds, start, stop);
     printf("Block SpMV COO time for %d executions: %f ms\n", NUM_EXECUTION, milliseconds);
+    // Copy result back to host
+    cudaMemcpy(computedResult.data(), d_y, computedResult.size() * sizeof(double), cudaMemcpyDeviceToHost);
+
+    // Compute the error
+    error = 0.0;
+    for (int i = 0; i < result.size(); i++) {
+        error += (result[i] - computedResult[i]) * (result[i] - computedResult[i]);
+    }
+    printf("Error: %lf\n", error);
+
+    sum2 = 0.0;
+    for (int i = 0; i < result.size(); i++) {
+        sum2 += computedResult[i] * computedResult[i];
+    }
+    printf("Squared sum: %lf\n", sum2);
+
+    // use coo method with first come first serve
+    // set y to zero
+    setZero<<<(nRows + 32) / 32, 32>>>(d_y, nRows);
+    cudaDeviceSynchronize();
+    cudaEventRecord(start);
+    for (int i = 0; i < NUM_EXECUTION; i++){
+        int zero = 0;
+        cudaMemcpyToSymbol(globalID, &zero, sizeof(int));
+        setZero<<<(nRows + 32) / 32, 32>>>(d_y, nRows);
+        blockSymmetricSpMVCOOFCFS<<<(blockFullOuterIndices.size() + 32) / 32, 32>>>(d_diagonalBlockValues, d_offDiagonalBlockValues, d_blockFullOuterIndices, d_blockInnerIndices, d_x, d_y, d_yt, nRows, blockFullOuterIndices.size());
+        addDaigonal<<<(nRows + 32) / 32, 32>>>(d_diagonalBlockValues, d_x, d_y, d_yt, nRows);
+        cudaDeviceSynchronize();
+    }
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaDeviceSynchronize();
+    cuda_error = cudaGetLastError();
+    if (cuda_error != cudaSuccess) {
+        std::cerr << "CUDA error: " << cudaGetErrorString(cuda_error) << std::endl;
+        return -1; // or handle the error as needed
+    }
+    cudaEventElapsedTime(&milliseconds, start, stop);
+    printf("Block SpMV COO with FCFS time for %d executions: %f ms\n", NUM_EXECUTION, milliseconds);
     // Copy result back to host
     cudaMemcpy(computedResult.data(), d_y, computedResult.size() * sizeof(double), cudaMemcpyDeviceToHost);
 
