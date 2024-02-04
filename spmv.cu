@@ -91,16 +91,6 @@ __global__ void blockSymmetricSpMV(const double* diagonalBlockValues, const doub
         
 
     }
-    // else if (row < nRows){
-    //     // only do the diagonals
-    //     double rowResult[BLOCKSIZE] = {0.0, 0.0, 0.0};
-    //     blockMultiply(diagonalBlockValues + row * BLOCKSIZE * BLOCKSIZE, x + row * BLOCKSIZE, rowResult);
-    //     #pragma unroll
-    //     for (int i = 0; i < BLOCKSIZE; i++) {
-    //         atomicAdd(y + row * BLOCKSIZE + i, rowResult[i]);
-    //         // y[row * BLOCKSIZE + i] += rowResult[i];
-    //     }
-    // }
 }
 
 __global__ void addDaigonal(const double* diagonalBlockValues, const double* x, double* y, const double* yt, int nRows){
